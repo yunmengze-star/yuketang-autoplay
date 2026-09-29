@@ -1,18 +1,32 @@
-# 雨课堂自动播放下一视频
+# Yuketang Autoplay
 
-适配新版雨课堂页面。
+适用于新版雨课堂（Yuketang）的 Tampermonkey 用户脚本。
+
+用于在正常播放完成当前视频后，自动进入课程目录中的下一个视频。
 
 ## 功能
 
-- 自动检测当前视频
-- 视频播放完成后自动进入下一个视频
+- 自动识别雨课堂视频播放器
+- 当前视频播放完成后自动进入下一个视频
 - 自动跳过作业等非视频内容
-- 尝试自动播放下一视频
+- 支持雨课堂 SPA 页面切换
+- 支持动态替换视频源
+- 防止重复触发导致连续跳过多个视频
+- 支持自定义播放倍速
+- 兼容浏览器自动播放限制
+- 提供调试日志
 
 ## 安装
 
-需要先安装 Tampermonkey。
+首先安装 Tampermonkey。
 
 然后安装：
 
-yuketang-autoplay.user.js
+https://raw.githubusercontent.com/yunmengze-star/yuketang-autoplay/main/yuketang-autoplay.user.js
+
+## 播放倍速
+
+默认使用正常速度：
+
+```javascript
+playbackRate: 1.0,

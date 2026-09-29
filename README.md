@@ -29,7 +29,7 @@ https://raw.githubusercontent.com/yunmengze-star/yuketang-autoplay/main/yuketang
 默认使用正常速度：
 
 ```javascript
-playbackRate: 1.0,
+playbackRate: 1.0
 
 ## 免责声明
 

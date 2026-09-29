@@ -30,6 +30,7 @@ https://raw.githubusercontent.com/yunmengze-star/yuketang-autoplay/main/yuketang
 
 ```javascript
 playbackRate: 1.0
+```
 
 ## 免责声明
 

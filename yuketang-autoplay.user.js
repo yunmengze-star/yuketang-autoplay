@@ -1,12 +1,22 @@
 // ==UserScript==
 // @name         雨课堂自动连续播放
-// @namespace    http://tampermonkey.net/
+// @name:zh-CN   雨课堂自动连续播放
+// @namespace    https://github.com/yunmengze-star/yuketang-autoplay
 // @version      3.0.0
-// @description  新版雨课堂自动连续播放：视频结束后自动进入下一个视频，支持 SPA 页面切换与自定义播放倍速。
-// @author       YourName
+// @description  新版雨课堂自动连续播放：当前视频正常播放结束后，自动寻找并进入下一个视频。支持 SPA 页面、自定义倍速、重复触发保护和异常恢复。
+// @description:zh-CN 新版雨课堂自动连续播放：当前视频正常播放结束后，自动寻找并进入下一个视频。支持 SPA 页面、自定义倍速、重复触发保护和异常恢复。
+// @author       yunmengze-star
 // @license      MIT
-// @match        https://*.yuketang.cn/*
+//
+// @homepageURL  https://github.com/yunmengze-star/yuketang-autoplay
+// @supportURL   https://github.com/yunmengze-star/yuketang-autoplay/issues
+//
+// @updateURL    https://raw.githubusercontent.com/yunmengze-star/yuketang-autoplay/main/yuketang-autoplay.user.js
+// @downloadURL  https://raw.githubusercontent.com/yunmengze-star/yuketang-autoplay/main/yuketang-autoplay.user.js
+//
+// @match        https://*.yuketang.cn/ai-workspace/lms-graph/*
 // @run-at       document-idle
+// @noframes
 // @grant        none
 // ==/UserScript==
 
@@ -15,78 +25,167 @@
 
     /**
      * ============================================================
-     * 用户配置
+     *  雨课堂自动连续播放
+     *  Yuketang Autoplay
      * ============================================================
+     *
+     * GitHub:
+     * https://github.com/yunmengze-star/yuketang-autoplay
+     *
+     * 主要功能：
+     *
+     * 1. 自动识别当前视频播放器
+     * 2. 当前视频真正播放结束后自动进入下一个视频
+     * 3. 自动跳过“作业”等非视频学习单元
+     * 4. 支持新版雨课堂 SPA 页面
+     * 5. 支持同一个 <video> 元素动态更换视频源
+     * 6. 防止 ended/timeupdate 重复触发导致连续跳过多个视频
+     * 7. 支持自定义播放倍速
+     * 8. 尽可能自动播放下一视频
+     * 9. 等待当前视频完成状态提交后再切换
+     *
+     * 本脚本不会：
+     *
+     * - 修改课程完成度
+     * - 伪造视频完成状态
+     * - 自动拖动进度条
+     * - 自动完成作业
+     * - 自动答题
+     *
+     * 它只是在视频正常播放结束后自动切换到下一视频。
      */
+
+
+    /* ============================================================
+     * 用户配置
+     * ============================================================ */
+
     const CONFIG = Object.freeze({
 
         /**
          * 播放倍速
          *
-         * 1.0 = 正常速度（默认）
-         * 1.25 = 1.25 倍
-         * 1.5 = 1.5 倍
-         * 2.0 = 2 倍
+         * 默认：
          *
-         * 如果需要 2 倍速：
+         *     1.0
          *
-         * playbackRate: 2.0,
+         * 即正常 1 倍速。
+         *
+         * 如果想修改：
+         *
+         * 1.25 倍：
+         *     playbackRate: 1.25,
+         *
+         * 1.5 倍：
+         *     playbackRate: 1.5,
+         *
+         * 2 倍：
+         *     playbackRate: 2.0,
+         *
+         * 修改这里即可，其他代码不用动。
          *
          * 注意：
-         * 是否允许倍速、是否记录倍速由课程和平台规则决定。
+         * 是否允许使用倍速，以及平台是否记录播放倍速，
+         * 由具体课程和雨课堂平台规则决定。
          */
         playbackRate: 1.0,
 
+
         /**
-         * 进入视频页面后是否尝试自动播放。
+         * 是否尝试自动播放。
          *
-         * 浏览器可能会阻止首次“有声音自动播放”。
-         * 一旦用户与网页进行过真实交互，后续通常可以正常连续播放。
+         * true：
+         *     进入下一视频后尝试自动播放。
+         *
+         * false：
+         *     只自动切换视频，不自动调用 play()。
          */
         autoPlay: true,
 
+
         /**
-         * 视频结束后等待多久再进入下一视频。
+         * 视频结束后最少等待时间。
          *
-         * 不建议设置成 0。
-         * 留几秒时间可以让页面正常提交播放完成状态。
+         * 默认 3000 ms = 3 秒。
+         *
+         * 不建议设置为 0。
+         *
+         * 留出一点时间，可以让雨课堂正常提交
+         * 当前视频的观看状态。
          */
         nextDelayMs: 3000,
 
+
         /**
-         * 距离视频结尾多少秒时视为播放结束。
+         * 等待雨课堂显示“已完成”的最长时间。
          *
-         * 这是 ended 事件没有正常触发时的备用机制。
+         * 默认最多等待 10 秒。
+         *
+         * 如果 10 秒后仍未显示“已完成”，
+         * 脚本仍然会继续进入下一视频。
+         */
+        completionWaitMaxMs: 10000,
+
+
+        /**
+         * 检查“已完成”状态的间隔。
+         */
+        completionCheckIntervalMs: 500,
+
+
+        /**
+         * 视频距离最后多少秒时，
+         * 可以作为 ended 事件的备用结束判断。
+         *
+         * 默认 0.35 秒。
          */
         endToleranceSec: 0.35,
 
+
         /**
-         * 页面状态检查间隔。
+         * SPA 页面备用扫描间隔。
          *
-         * 用于兼容雨课堂 SPA 页面切换、DOM 动态更新等情况。
+         * MutationObserver 是主要机制，
+         * 定时扫描只是兜底。
          */
         scanIntervalMs: 1500,
 
+
         /**
-         * 是否输出调试信息。
+         * 是否在 F12 Console 输出调试日志。
          *
-         * 如果脚本已经稳定运行，可以改成 false。
+         * true：
+         *     输出运行过程。
+         *
+         * false：
+         *     安静运行。
+         *
+         * 推荐刚安装时保持 true。
+         * 稳定以后可以修改成 false。
          */
         debug: true
     });
 
 
-    /**
-     * ============================================================
+    /* ============================================================
      * 页面选择器
      * ============================================================
      *
-     * 集中放在这里，未来雨课堂改版时只需要修改这里，
-     * 不需要改整个脚本。
+     * 未来如果雨课堂修改页面结构，
+     * 优先检查并修改这里。
+     *
+     * 将选择器集中保存，避免散落在整个脚本中。
      */
+
     const SELECTORS = Object.freeze({
 
-        // 当前视频
+        /**
+         * 视频播放器。
+         *
+         * 第一项是当前新版雨课堂实际使用的播放器。
+         *
+         * 后面几个是备用选择器。
+         */
         video: [
             'video.xt_video_player',
             '#video-box video',
@@ -94,61 +193,131 @@
             'video'
         ].join(','),
 
-        // 左侧课程目录中的所有学习单元
+
+        /**
+         * 左侧课程目录中的每一个学习单元。
+         */
         leaf: '.leaf-item',
 
-        // 当前正在学习的目录项
+
+        /**
+         * 当前正在学习的项目。
+         */
         activeLeaf: '.leaf-item.is-active',
 
-        // 学习单元类型，例如“视频”“作业”
+
+        /**
+         * 项目类型。
+         *
+         * 例如：
+         *
+         * 视频
+         * 作业
+         */
         leafTag: '.leaf-item-tag',
 
-        // 学习单元标题
+
+        /**
+         * 项目标题。
+         */
         leafTitle: '.leaf-item-title',
 
-        // 当前页面上方显示的课程标题
-        currentTitle: '.unit-title'
+
+        /**
+         * 页面播放器上方显示的当前课程标题。
+         *
+         * 当 .is-active 暂时没有更新时，
+         * 可以作为备用识别方式。
+         */
+        currentTitle: '.unit-title',
+
+
+        /**
+         * 当前学习单元完成状态。
+         *
+         * 当前页面通常会显示：
+         *
+         * 已完成
+         */
+        completionText:
+            '.learning-space-control-unit .rate-detail .text'
     });
 
 
-    /**
-     * ============================================================
+    /* ============================================================
      * 运行状态
-     * ============================================================
-     */
+     * ============================================================ */
+
     const state = {
 
-        // 当前 URL
-        href: location.href,
+        /**
+         * 当前 URL。
+         */
+        href: window.location.href,
 
-        // 当前 video DOM
+
+        /**
+         * 当前绑定的 <video>。
+         */
         video: null,
 
-        // 当前视频源
+
+        /**
+         * 当前视频源。
+         *
+         * 雨课堂可能复用同一个 <video> DOM，
+         * 只修改 src，因此需要单独记录。
+         */
         videoSrc: '',
 
-        // 当前视频事件控制器
+
+        /**
+         * 当前视频事件 AbortController。
+         *
+         * 换视频时可以一次性解除旧事件监听。
+         */
         eventController: null,
 
-        // 当前视频是否已经真正开始播放
+
+        /**
+         * 本视频是否真正开始播放过。
+         */
         hasStarted: false,
 
-        // 是否已经触发“下一视频”
+
+        /**
+         * 是否已经安排进入下一视频。
+         *
+         * 防止：
+         *
+         * ended
+         *
+         * +
+         *
+         * timeupdate
+         *
+         * 同时触发。
+         */
         nextScheduled: false,
 
-        // MutationObserver 的防抖计时器
+
+        /**
+         * DOM Observer 防抖。
+         */
         scanTimer: null,
 
-        // 是否正在等待用户交互后重新尝试自动播放
+
+        /**
+         * 是否已经安装用户交互后的自动播放重试。
+         */
         gestureRetryInstalled: false
     };
 
 
-    /**
-     * ============================================================
-     * 日志
-     * ============================================================
-     */
+    /* ============================================================
+     * 日志工具
+     * ============================================================ */
+
     function log(...args) {
 
         if (!CONFIG.debug) {
@@ -172,11 +341,10 @@
     }
 
 
-    /**
-     * ============================================================
-     * 文本工具
-     * ============================================================
-     */
+    /* ============================================================
+     * 基础工具
+     * ============================================================ */
+
     function normalizeText(text) {
 
         return String(text ?? '')
@@ -185,11 +353,18 @@
     }
 
 
-    /**
-     * ============================================================
+    function sleep(ms) {
+
+        return new Promise(resolve => {
+            window.setTimeout(resolve, ms);
+        });
+    }
+
+
+    /* ============================================================
      * 获取课程目录
-     * ============================================================
-     */
+     * ============================================================ */
+
     function getLeaves() {
 
         return Array.from(
@@ -200,9 +375,6 @@
     }
 
 
-    /**
-     * 获取目录项标题
-     */
     function getLeafTitle(leaf) {
 
         if (!leaf) {
@@ -220,15 +392,6 @@
     }
 
 
-    /**
-     * 获取目录项类型
-     *
-     * 例如：
-     *
-     * 视频
-     * 作业
-     * 课件
-     */
     function getLeafType(leaf) {
 
         if (!leaf) {
@@ -246,18 +409,18 @@
     }
 
 
-    /**
-     * ============================================================
-     * 寻找当前课程
-     * ============================================================
-     */
+    /* ============================================================
+     * 获取当前课程
+     * ============================================================ */
+
     function getActiveLeaf() {
 
         /**
-         * 第一方案：
-         * 使用 is-active。
+         * 正常情况：
          *
-         * 当前页面正常情况下应该使用这个方法。
+         * 当前课程带：
+         *
+         * .leaf-item.is-active
          */
         const active =
             document.querySelector(
@@ -270,12 +433,10 @@
 
 
         /**
-         * 第二方案：
+         * SPA 页面切换过程中，
+         * is-active 偶尔可能尚未更新。
          *
-         * 某些 SPA 切换瞬间，
-         * is-active 可能还没有来得及添加。
-         *
-         * 此时通过页面顶部课程标题进行匹配。
+         * 这时尝试使用播放器上方标题匹配。
          */
         const currentTitle =
             normalizeText(
@@ -288,6 +449,7 @@
             return null;
         }
 
+
         return (
             getLeaves().find(
                 leaf =>
@@ -298,18 +460,19 @@
     }
 
 
-    /**
-     * ============================================================
-     * 寻找下一个视频
-     * ============================================================
-     */
+    /* ============================================================
+     * 查找下一个视频
+     * ============================================================ */
+
     function getNextVideoLeaf() {
 
         const leaves = getLeaves();
 
         if (!leaves.length) {
 
-            log('暂时没有找到课程目录');
+            log(
+                '暂时没有找到课程目录'
+            );
 
             return null;
         }
@@ -320,7 +483,7 @@
         if (!active) {
 
             log(
-                '暂时没有识别到当前课程'
+                '暂时没有找到当前激活课程'
             );
 
             return null;
@@ -330,10 +493,11 @@
         const currentIndex =
             leaves.indexOf(active);
 
-        if (currentIndex === -1) {
+
+        if (currentIndex < 0) {
 
             log(
-                '当前课程不在目录列表中'
+                '当前课程不在课程目录列表中'
             );
 
             return null;
@@ -347,19 +511,20 @@
 
 
         /**
-         * 从当前项目后面开始寻找。
+         * 从当前学习单元后面开始搜索。
          *
-         * 只找“视频”。
+         * 只选择类型为“视频”的项目。
          *
-         * 所以：
+         * 例如：
          *
-         * 视频
+         * 视频 A
          * ↓
          * 作业
          * ↓
-         * 视频
+         * 视频 B
          *
-         * 会自动跳过中间的作业。
+         * 视频 A 播完以后，
+         * 会直接进入视频 B。
          */
         for (
             let i = currentIndex + 1;
@@ -367,10 +532,12 @@
             i++
         ) {
 
-            const leaf = leaves[i];
+            const leaf =
+                leaves[i];
+
 
             /**
-             * 跳过明显不可用的节点
+             * 跳过明显禁用的项目。
              */
             if (
                 leaf.matches(
@@ -379,6 +546,7 @@
                     '[aria-disabled="true"]'
                 )
             ) {
+
                 continue;
             }
 
@@ -386,10 +554,11 @@
             const type =
                 getLeafType(leaf);
 
+
             if (type === '视频') {
 
                 log(
-                    '找到下一个视频：',
+                    '下一个视频：',
                     getLeafTitle(leaf)
                 );
 
@@ -402,12 +571,16 @@
     }
 
 
-    /**
-     * ============================================================
+    /* ============================================================
      * 播放倍速
-     * ============================================================
-     */
+     * ============================================================ */
+
     function applyPlaybackRate(video) {
+
+        if (!video) {
+            return;
+        }
+
 
         const rate =
             Number(
@@ -416,7 +589,13 @@
 
 
         /**
-         * 防止配置写错。
+         * 防止用户把配置误写成：
+         *
+         * playbackRate: "abc"
+         *
+         * 或：
+         *
+         * playbackRate: 0
          */
         if (
             !Number.isFinite(rate) ||
@@ -437,29 +616,37 @@
             video.defaultPlaybackRate =
                 rate;
 
-            video.playbackRate =
-                rate;
+
+            if (
+                Math.abs(
+                    video.playbackRate -
+                    rate
+                ) > 0.01
+            ) {
+
+                video.playbackRate =
+                    rate;
+            }
 
 
             log(
-                `播放速度设置为 ${rate}x`
+                `播放速度：${rate}x`
             );
 
         } catch (error) {
 
             warn(
-                '设置播放速度失败',
+                '设置播放倍速失败：',
                 error
             );
         }
     }
 
 
-    /**
-     * ============================================================
+    /* ============================================================
      * 自动播放
-     * ============================================================
-     */
+     * ============================================================ */
+
     async function tryAutoPlay(video) {
 
         if (
@@ -468,6 +655,7 @@
             video.ended ||
             !video.paused
         ) {
+
             return;
         }
 
@@ -476,6 +664,7 @@
 
             await video.play();
 
+
             log(
                 '自动播放成功'
             );
@@ -483,12 +672,11 @@
         } catch (error) {
 
             /**
-             * Chrome / Edge：
+             * Chrome / Edge 等浏览器会限制
+             * 没有用户交互时的有声自动播放。
              *
-             * 页面没有发生真实用户操作之前，
-             * 有声视频可能禁止自动播放。
-             *
-             * 这里不会疯狂重复调用 play()。
+             * 浏览器策略无法由普通 userscript
+             * 可靠地强行绕过。
              */
             if (
                 error?.name ===
@@ -496,8 +684,9 @@
             ) {
 
                 log(
-                    '浏览器暂时阻止自动播放，等待下一次用户页面交互'
+                    '浏览器暂时阻止自动播放，等待用户第一次正常操作页面'
                 );
+
 
                 installGestureRetry();
 
@@ -513,16 +702,10 @@
     }
 
 
-    /**
-     * ============================================================
-     * 浏览器首次自动播放限制
-     * ============================================================
-     *
-     * 用户只要正常点击一下网页或按一下键盘，
-     * 就会再次尝试播放。
-     *
-     * 不需要专门点击脚本按钮。
-     */
+    /* ============================================================
+     * 用户第一次操作页面后重试播放
+     * ============================================================ */
+
     function installGestureRetry() {
 
         if (
@@ -536,33 +719,18 @@
             true;
 
 
-        const retry = () => {
-
-            cleanup();
-
-            if (
-                state.video &&
-                state.video.paused &&
-                !state.video.ended
-            ) {
-
-                tryAutoPlay(
-                    state.video
-                );
-            }
-        };
-
-
         const cleanup = () => {
 
             state.gestureRetryInstalled =
                 false;
+
 
             window.removeEventListener(
                 'pointerdown',
                 retry,
                 true
             );
+
 
             window.removeEventListener(
                 'keydown',
@@ -572,11 +740,38 @@
         };
 
 
+        const retry = () => {
+
+            cleanup();
+
+
+            const video =
+                state.video;
+
+
+            if (
+                video &&
+                video.paused &&
+                !video.ended
+            ) {
+
+                tryAutoPlay(video);
+            }
+        };
+
+
+        /**
+         * 用户正常点击页面或者按键以后，
+         * 自动再尝试一次。
+         *
+         * 不需要额外点击脚本自己的按钮。
+         */
         window.addEventListener(
             'pointerdown',
             retry,
             true
         );
+
 
         window.addEventListener(
             'keydown',
@@ -586,170 +781,321 @@
     }
 
 
-    /**
-     * ============================================================
-     * 自动进入下一视频
-     * ============================================================
-     */
-    function scheduleNextVideo(
+    /* ============================================================
+     * 当前学习单元是否显示“已完成”
+     * ============================================================ */
+
+    function isCurrentUnitCompleted() {
+
+        const element =
+            document.querySelector(
+                SELECTORS.completionText
+            );
+
+
+        const text =
+            normalizeText(
+                element?.textContent
+            );
+
+
+        return (
+            text.includes('已完成')
+        );
+    }
+
+
+    /* ============================================================
+     * 等待课程完成状态提交
+     * ============================================================ */
+
+    async function waitForCompletion() {
+
+        /**
+         * 如果已经显示“已完成”，
+         * 无需继续等待。
+         */
+        if (
+            isCurrentUnitCompleted()
+        ) {
+
+            log(
+                '当前视频状态已经显示“已完成”'
+            );
+
+            return true;
+        }
+
+
+        const start =
+            Date.now();
+
+
+        log(
+            '等待雨课堂提交当前视频完成状态'
+        );
+
+
+        while (
+            Date.now() - start <
+            CONFIG.completionWaitMaxMs
+        ) {
+
+            await sleep(
+                CONFIG.completionCheckIntervalMs
+            );
+
+
+            if (
+                isCurrentUnitCompleted()
+            ) {
+
+                log(
+                    '检测到“已完成”状态'
+                );
+
+                return true;
+            }
+        }
+
+
+        /**
+         * 超时也继续。
+         *
+         * 避免页面状态显示异常导致脚本永远卡死。
+         */
+        log(
+            '等待完成状态超时，继续执行下一视频'
+        );
+
+
+        return false;
+    }
+
+
+    /* ============================================================
+     * 点击课程目录项
+     * ============================================================ */
+
+    function clickLeaf(leaf) {
+
+        if (!leaf) {
+            return false;
+        }
+
+
+        try {
+
+            /**
+             * 如果目标不在当前可视区域，
+             * 先滚动到附近。
+             */
+            leaf.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
+
+        } catch {
+            // 滚动失败不影响后续点击
+        }
+
+
+        /**
+         * 原生 click 会生成正常的冒泡 click 事件，
+         * Vue 的监听器通常可以正常收到。
+         */
+        leaf.click();
+
+
+        return true;
+    }
+
+
+    /* ============================================================
+     * 视频结束 → 下一视频
+     * ============================================================ */
+
+    async function scheduleNextVideo(
         video,
         reason
     ) {
 
         /**
-         * 防止：
-         *
-         * ended
-         *
-         * 和
-         *
-         * timeupdate
-         *
-         * 同时触发导致一次跳两个视频。
+         * 防止重复触发。
          */
         if (
             state.nextScheduled ||
             video !== state.video
         ) {
+
             return;
         }
 
 
-        state.nextScheduled = true;
+        state.nextScheduled =
+            true;
 
 
         const pageAtEnd =
-            location.href;
+            window.location.href;
 
 
         log(
-            `视频播放结束 (${reason})`
+            `检测到视频播放结束，来源：${reason}`
         );
+
+
+        /**
+         * 先至少等待配置中的时间。
+         */
+        if (
+            CONFIG.nextDelayMs > 0
+        ) {
+
+            log(
+                `${CONFIG.nextDelayMs / 1000} 秒后检查下一视频`
+            );
+
+
+            await sleep(
+                CONFIG.nextDelayMs
+            );
+        }
+
+
+        /**
+         * 用户可能已经自己切换了课程。
+         *
+         * 如果发生这种情况，
+         * 取消旧任务。
+         */
+        if (
+            video !== state.video ||
+            window.location.href !==
+                pageAtEnd
+        ) {
+
+            log(
+                '页面已经发生变化，取消旧的自动跳转'
+            );
+
+            return;
+        }
+
+
+        /**
+         * 等待雨课堂提交当前视频完成状态。
+         */
+        await waitForCompletion();
+
+
+        /**
+         * 等待过程中用户仍然可能手动切换。
+         */
+        if (
+            video !== state.video ||
+            window.location.href !==
+                pageAtEnd
+        ) {
+
+            log(
+                '页面已经发生变化，取消自动跳转'
+            );
+
+            return;
+        }
+
+
+        const next =
+            getNextVideoLeaf();
+
+
+        if (!next) {
+
+            state.nextScheduled =
+                false;
+
+
+            log(
+                '没有找到后续视频，可能已经到达本课程最后一个视频'
+            );
+
+
+            return;
+        }
+
+
+        const nextTitle =
+            getLeafTitle(next);
 
 
         log(
-            `${CONFIG.nextDelayMs / 1000} 秒后进入下一视频`
+            '准备进入下一视频：',
+            nextTitle
         );
 
 
-        window.setTimeout(
-            () => {
+        try {
 
-                /**
-                 * 等待期间用户自己切换了页面，
-                 * 那么取消原来的自动跳转。
-                 */
-                if (
-                    video !== state.video ||
-                    location.href !==
-                        pageAtEnd
-                ) {
+            next.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
 
-                    log(
-                        '页面已经发生变化，取消本次自动跳转'
-                    );
-
-                    return;
-                }
+        } catch {
+            // ignore
+        }
 
 
-                const next =
-                    getNextVideoLeaf();
+        /**
+         * 给滚动动画一点时间。
+         */
+        await sleep(300);
 
 
-                if (!next) {
+        /**
+         * 再次确认用户没有自己切换课程。
+         */
+        if (
+            video !== state.video ||
+            window.location.href !==
+                pageAtEnd
+        ) {
 
-                    state.nextScheduled =
-                        false;
-
-                    log(
-                        '没有找到后续视频，可能已经播放到课程末尾'
-                    );
-
-                    return;
-                }
-
-
-                const nextTitle =
-                    getLeafTitle(next);
+            return;
+        }
 
 
-                log(
-                    '准备进入：',
-                    nextTitle
-                );
+        if (
+            clickLeaf(next)
+        ) {
 
-
-                /**
-                 * 滚动到目标。
-                 *
-                 * 即使左侧目录滚动较远，
-                 * 也可以正常定位。
-                 */
-                try {
-
-                    next.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'center',
-                        inline: 'nearest'
-                    });
-
-                } catch {
-                    // scrollIntoView 失败不会影响点击
-                }
-
-
-                window.setTimeout(
-                    () => {
-
-                        /**
-                         * 再次检查：
-                         * 防止滚动期间用户手动换课。
-                         */
-                        if (
-                            video !==
-                                state.video ||
-                            location.href !==
-                                pageAtEnd
-                        ) {
-                            return;
-                        }
-
-
-                        /**
-                         * Vue 页面通常直接监听
-                         * .leaf-item 的 click。
-                         */
-                        next.click();
-
-
-                        log(
-                            '已点击下一视频：',
-                            nextTitle
-                        );
-
-                    },
-                    300
-                );
-
-            },
-            CONFIG.nextDelayMs
-        );
+            log(
+                '已点击下一视频：',
+                nextTitle
+            );
+        }
     }
 
 
-    /**
-     * ============================================================
-     * 绑定视频事件
-     * ============================================================
-     */
+    /* ============================================================
+     * 绑定视频
+     * ============================================================ */
+
     function bindVideo(video) {
 
+        if (!video) {
+            return;
+        }
+
+
         /**
-         * 移除旧 video 上的监听器。
+         * 移除旧视频上的监听器。
          *
-         * AbortController 可以避免 SPA 多次切换之后
-         * 出现越来越多的重复事件。
+         * SPA 长时间运行时尤其重要，
+         * 防止事件监听器不断累积。
          */
         state.eventController?.abort();
 
@@ -758,50 +1104,95 @@
             new AbortController();
 
 
+        const signal =
+            controller.signal;
+
+
         state.eventController =
             controller;
 
+
         state.video =
             video;
+
 
         state.videoSrc =
             video.currentSrc ||
             video.src ||
             '';
 
+
         state.hasStarted =
             false;
+
 
         state.nextScheduled =
             false;
 
 
-        const signal =
-            controller.signal;
-
-
         log(
             '绑定视频：',
-            state.videoSrc ||
-            video
+            state.videoSrc || video
         );
 
 
         /**
-         * 设置播放速度。
+         * 应用播放倍速。
          */
         applyPlaybackRate(video);
 
 
         /**
-         * metadata 加载完成以后再设置一次。
+         * metadata 加载后再设置一次。
          *
-         * 某些播放器在加载视频时可能重置 playbackRate。
+         * 防止播放器加载新资源时
+         * 把 playbackRate 重置为 1。
          */
         video.addEventListener(
             'loadedmetadata',
             () => {
-                applyPlaybackRate(video);
+
+                applyPlaybackRate(
+                    video
+                );
+
+            },
+            {
+                signal
+            }
+        );
+
+
+        /**
+         * 如果播放器自身重新修改播放倍速，
+         * 恢复 CONFIG 中指定的值。
+         *
+         * 只有设置值不同的时候才会重新设置，
+         * 不会形成无限 ratechange 循环。
+         */
+        video.addEventListener(
+            'ratechange',
+            () => {
+
+                const targetRate =
+                    Number(
+                        CONFIG.playbackRate
+                    );
+
+
+                if (
+                    Number.isFinite(targetRate) &&
+                    targetRate > 0 &&
+                    Math.abs(
+                        video.playbackRate -
+                        targetRate
+                    ) > 0.01
+                ) {
+
+                    video.playbackRate =
+                        targetRate;
+                }
+
             },
             {
                 signal
@@ -819,9 +1210,11 @@
                 state.hasStarted =
                     true;
 
+
                 log(
                     '视频开始播放'
                 );
+
             },
             {
                 signal
@@ -830,8 +1223,7 @@
 
 
         /**
-         * 主判断：
-         * HTML5 标准 ended 事件。
+         * 主结束事件。
          */
         video.addEventListener(
             'ended',
@@ -850,13 +1242,18 @@
 
 
         /**
-         * 备用判断。
+         * ended 的备用机制。
          *
-         * 某些播放器封装情况下，
-         * ended 偶尔可能不触发。
+         * 部分自定义播放器封装环境中，
+         * ended 偶尔可能没有按照预期触发。
          *
-         * 必须确认本次视频真正播放过，
-         * 防止打开一个已经在末尾的视频时直接跳走。
+         * 因此当：
+         *
+         * currentTime ≈ duration
+         *
+         * 时也进行一次判断。
+         *
+         * nextScheduled 会防止重复执行。
          */
         video.addEventListener(
             'timeupdate',
@@ -866,12 +1263,14 @@
                     !state.hasStarted ||
                     state.nextScheduled
                 ) {
+
                     return;
                 }
 
 
                 const duration =
                     video.duration;
+
 
                 const current =
                     video.currentTime;
@@ -881,8 +1280,12 @@
                     !Number.isFinite(
                         duration
                     ) ||
-                    duration <= 0
+                    duration <= 0 ||
+                    !Number.isFinite(
+                        current
+                    )
                 ) {
+
                     return;
                 }
 
@@ -907,10 +1310,11 @@
 
 
         /**
-         * 自动播放只尝试一次。
+         * 自动播放只在绑定视频时主动尝试。
          *
-         * 不会在用户主动暂停之后
-         * 一遍又一遍强制重新播放。
+         * 不会每隔一秒调用 play()，
+         * 因此用户主动暂停以后不会被脚本
+         * 立刻强制恢复。
          */
         let autoPlayAttempted =
             false;
@@ -925,13 +1329,22 @@
                     return;
                 }
 
+
                 autoPlayAttempted =
                     true;
 
-                tryAutoPlay(video);
+
+                tryAutoPlay(
+                    video
+                );
             };
 
 
+        /**
+         * readyState >= 2：
+         *
+         * 已经有足够数据可以开始播放。
+         */
         if (
             video.readyState >= 2
         ) {
@@ -955,41 +1368,42 @@
     }
 
 
-    /**
-     * ============================================================
-     * 检测当前页面
-     * ============================================================
-     */
+    /* ============================================================
+     * 扫描当前页面
+     * ============================================================ */
+
     function scanPage() {
 
         /**
-         * 雨课堂使用 SPA。
-         *
-         * 页面变化时不一定真正刷新浏览器，
-         * 因此不能只依赖 userscript 第一次启动。
+         * 检测 SPA URL 切换。
          */
         if (
-            location.href !==
+            window.location.href !==
             state.href
         ) {
 
             state.href =
-                location.href;
+                window.location.href;
+
 
             state.nextScheduled =
                 false;
+
 
             state.hasStarted =
                 false;
 
 
             log(
-                '页面切换：',
+                '检测到页面切换：',
                 state.href
             );
         }
 
 
+        /**
+         * 找当前视频。
+         */
         const video =
             document.querySelector(
                 SELECTORS.video
@@ -1008,8 +1422,9 @@
 
 
         /**
-         * 情况 1：
-         * 新页面创建了新的 <video>。
+         * 情况一：
+         *
+         * 新视频创建了新的 <video> DOM。
          */
         if (
             video !==
@@ -1023,13 +1438,10 @@
 
 
         /**
-         * 情况 2：
+         * 情况二：
          *
-         * Vue 没有创建新的 video，
-         * 而是复用了同一个 DOM，
-         * 只修改了 src。
-         *
-         * 这种情况也需要重新初始化。
+         * Vue / 播放器复用了原来的 <video>，
+         * 只修改 src。
          */
         if (
             src &&
@@ -1038,33 +1450,43 @@
         ) {
 
             log(
-                '检测到视频源发生变化'
+                '检测到当前视频源发生变化'
             );
+
 
             bindVideo(video);
         }
     }
 
 
-    /**
+    /* ============================================================
+     * DOM MutationObserver
      * ============================================================
-     * DOM 变化监听
-     * ============================================================
      *
-     * MutationObserver：
+     * 新版雨课堂是 SPA。
      *
-     * 新视频一插入 DOM，
-     * 可以快速发现。
+     * 点击课程目录以后不会像传统网页一样
+     * 整个页面重新加载。
      *
-     * 不需要一直高频 setInterval。
+     * MutationObserver 可以在新播放器或
+     * 新视频源进入页面后尽快发现变化。
      */
+
     const observer =
         new MutationObserver(
             () => {
 
+                /**
+                 * 防抖：
+                 *
+                 * 页面可能一次触发几十个 Mutation，
+                 * 没必要每一个都扫描。
+                 */
                 if (
-                    state.scanTimer
+                    state.scanTimer !==
+                    null
                 ) {
+
                     return;
                 }
 
@@ -1075,6 +1497,7 @@
 
                             state.scanTimer =
                                 null;
+
 
                             scanPage();
 
@@ -1092,38 +1515,49 @@
             subtree: true,
 
             /**
-             * SPA 可能复用 video 并修改 src。
+             * 主要监听 video src 变化。
+             *
+             * 不监听全页面 class，
+             * 避免播放器动画、进度条等
+             * 产生大量无意义 Mutation。
              */
             attributes: true,
+
             attributeFilter: [
-                'src',
-                'class'
+                'src'
             ]
         }
     );
 
 
-    /**
-     * ============================================================
-     * 备用定时检查
-     * ============================================================
-     *
-     * MutationObserver 为主，
-     * setInterval 为兜底。
-     *
-     * 即使雨课堂内部以后修改部分 DOM 更新方式，
-     * 仍有机会发现新视频。
-     */
-    const interval =
-        window.setInterval(
-            scanPage,
-            CONFIG.scanIntervalMs
-        );
+    /* ============================================================
+     * SPA / 浏览器事件
+     * ============================================================ */
+
+    window.addEventListener(
+        'popstate',
+        () => {
+
+            window.setTimeout(
+                scanPage,
+                100
+            );
+        }
+    );
 
 
-    /**
-     * 页面从后台恢复时检查一次。
-     */
+    window.addEventListener(
+        'pageshow',
+        () => {
+
+            window.setTimeout(
+                scanPage,
+                100
+            );
+        }
+    );
+
+
     document.addEventListener(
         'visibilitychange',
         () => {
@@ -1139,45 +1573,34 @@
     );
 
 
-    /**
-     * BFCache 恢复。
-     */
-    window.addEventListener(
-        'pageshow',
-        scanPage
-    );
-
-
-    /**
-     * 页面销毁时清理。
-     */
-    window.addEventListener(
-        'pagehide',
-        () => {
-
-            observer.disconnect();
-
-            window.clearInterval(
-                interval
-            );
-
-            state.eventController
-                ?.abort();
-        },
-        {
-            once: true
-        }
-    );
-
-
-    /**
+    /* ============================================================
+     * 定时扫描兜底
      * ============================================================
+     *
+     * MutationObserver 是主要方式。
+     *
+     * 定时器只负责兜底：
+     *
+     * - URL 改变
+     * - Vue 状态改变
+     * - 播放器内部修改
+     *
+     * 每 1.5 秒一次，对性能影响很小。
+     */
+
+    window.setInterval(
+        scanPage,
+        CONFIG.scanIntervalMs
+    );
+
+
+    /* ============================================================
      * 启动
-     * ============================================================
-     */
+     * ============================================================ */
+
     log(
         '脚本启动',
-        `v3.0.0 | ${CONFIG.playbackRate}x`
+        `v3.0.0 | 播放速度 ${CONFIG.playbackRate}x`
     );
 
 

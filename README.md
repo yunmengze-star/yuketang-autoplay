@@ -30,3 +30,11 @@ https://raw.githubusercontent.com/yunmengze-star/yuketang-autoplay/main/yuketang
 
 ```javascript
 playbackRate: 1.0,
+
+## 免责声明
+
+本项目仅用于改善雨课堂网页端连续观看视频时的操作体验。
+
+请在遵守学校、课程及平台相关规定的前提下使用本脚本。因使用本项目产生的相关影响与风险，由使用者自行承担。
+
+本项目与雨课堂、学堂在线及其官方无任何关联。
